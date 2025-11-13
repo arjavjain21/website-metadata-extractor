@@ -842,9 +842,11 @@ class FallbackExtractor(BaseExtractor):
                 }
             ]
 
+            request_timeout = aiohttp.ClientTimeout(total=self.timeout)
+
             for headers in alternative_headers:
                 try:
-                    async with session.get(domain, headers=headers, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    async with session.get(domain, headers=headers, allow_redirects=True, timeout=request_timeout) as response:
                         if response.status == 200:
                             content = await self._read_content_safely(response)
                             if content:
@@ -868,7 +870,9 @@ class FallbackExtractor(BaseExtractor):
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             }
 
-            async with session.get(domain, headers=simple_headers, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=15)) as response:
+            request_timeout = aiohttp.ClientTimeout(total=self.timeout)
+
+            async with session.get(domain, headers=simple_headers, allow_redirects=True, timeout=request_timeout) as response:
                 status_code = response.status
                 content = await self._read_content_safely(response)
 
@@ -1378,15 +1382,30 @@ class StreamlitProgress:
 class ConsolidatedExtractor:
     """Consolidated extractor for Streamlit app."""
 
-    def __init__(self, concurrency: Optional[int] = None):
+    def __init__(
+        self,
+        concurrency: Optional[int] = None,
+        timeout: Optional[int] = None,
+        max_retries: Optional[int] = None,
+    ):
         self.config = self.get_default_config()
+
+        performance_config = self.config.setdefault('performance', {})
 
         if concurrency is not None:
             # Ensure the configured concurrency is always at least 1
             safe_concurrency = max(1, int(concurrency))
-            self.config.setdefault('performance', {})['concurrency'] = safe_concurrency
+            performance_config['concurrency'] = safe_concurrency
 
-        self.concurrency = self.config.get('performance', {}).get('concurrency', 10)
+        if timeout is not None:
+            safe_timeout = max(1, int(timeout))
+            performance_config['timeout'] = safe_timeout
+
+        if max_retries is not None:
+            safe_retries = max(0, int(max_retries))
+            performance_config['max_retries'] = safe_retries
+
+        self.concurrency = performance_config.get('concurrency', 10)
 
         self.html_extractor = HTMLExtractor(self.config)
         self.meta_extractor = MetaExtractor(self.config)
@@ -1454,27 +1473,40 @@ class ConsolidatedExtractor:
                 ('fallback_extractor', self.fallback_extractor)
             ]
 
-            for extractor_name, extractor in extractors:
-                try:
-                    result = await extractor.extract(normalized_domain, session=session, headers=headers)
+            max_retries = max(0, int(self.config.get('performance', {}).get('max_retries', 0)))
+            attempts = max_retries + 1
+            last_error_message: Optional[str] = None
+            last_status_code: Optional[int] = None
 
-                    if result.success:
-                        extraction_time = time.time() - start_time
-                        if progress_tracker:
-                            progress_tracker.update(True, normalized_domain, extractor_name)
+            for attempt in range(attempts):
+                for extractor_name, extractor in extractors:
+                    try:
+                        result = await extractor.extract(normalized_domain, session=session, headers=headers)
 
-                        return {
-                            'domain': domain,
-                            'meta_title': result.title or '',
-                            'meta_description': result.description or '',
-                            'extraction_method': result.method,
-                            'status_code': result.status_code or 200,
-                            'extraction_time': round(extraction_time, 2),
-                            'error_message': ''
-                        }
+                        if result.success:
+                            extraction_time = time.time() - start_time
+                            if progress_tracker:
+                                progress_tracker.update(True, normalized_domain, extractor_name)
 
-                except Exception:
-                    continue
+                            return {
+                                'domain': domain,
+                                'meta_title': result.title or '',
+                                'meta_description': result.description or '',
+                                'extraction_method': result.method,
+                                'status_code': result.status_code or 200,
+                                'extraction_time': round(extraction_time, 2),
+                                'error_message': ''
+                            }
+
+                        last_error_message = result.error_message or last_error_message
+                        last_status_code = result.status_code or last_status_code
+
+                    except Exception as exc:
+                        last_error_message = str(exc)
+
+                if attempt < attempts - 1:
+                    # Brief pause to avoid hammering the same domain on retries
+                    await asyncio.sleep(0)
 
             extraction_time = time.time() - start_time
             if progress_tracker:
@@ -1485,9 +1517,9 @@ class ConsolidatedExtractor:
                 'meta_title': '',
                 'meta_description': '',
                 'extraction_method': 'none',
-                'status_code': 0,
+                'status_code': last_status_code or 0,
                 'extraction_time': round(extraction_time, 2),
-                'error_message': 'All extraction methods failed'
+                'error_message': last_error_message or 'All extraction methods failed'
             }
 
         except Exception as e:
@@ -1604,7 +1636,39 @@ def main():
             "keeping this under 10,000 unless you are prepared for longer waits."
         ),
     )
-    concurrency = st.sidebar.slider("Concurrency level", 1, 20, 10)
+    concurrency = st.sidebar.slider(
+        "Concurrency level",
+        1,
+        20,
+        10,
+        help=(
+            "How many domains to request in parallel. Higher values speed up runs "
+            "but can increase load on your network and the target sites."
+        ),
+    )
+    request_timeout = st.sidebar.slider(
+        "Request timeout (seconds)",
+        5,
+        120,
+        30,
+        help=(
+            "Controls how long we wait for a response from each domain before "
+            "moving on. Lower values keep per-domain latency low and help massive "
+            "batches (tens of thousands of domains) finish sooner, but risk skipping "
+            "slow sites."
+        ),
+    )
+    max_retries = st.sidebar.slider(
+        "Retries per domain",
+        0,
+        5,
+        2,
+        help=(
+            "Number of times to re-attempt a domain after failures. Extra retries "
+            "improve reliability on flaky hosts, yet multiply the total work for "
+            "very large lists."
+        ),
+    )
 
     # File upload section
     st.header("📁 Upload CSV File")
@@ -1685,7 +1749,11 @@ stackoverflow.com
 
                         # Process domains
                         with st.spinner("Processing domains..."):
-                            extractor = ConsolidatedExtractor(concurrency=concurrency)
+                            extractor = ConsolidatedExtractor(
+                                concurrency=concurrency,
+                                timeout=request_timeout,
+                                max_retries=max_retries,
+                            )
 
                             # Run async processing
                             loop = asyncio.new_event_loop()
