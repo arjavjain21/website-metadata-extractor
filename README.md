@@ -63,7 +63,11 @@ amazon.com
 
 - **Maximum domains**: Limit the number of domains to process (10-100,000). Processing more than a few thousand domains will take considerably longer and may require a stable network connection.
 - **Concurrency level**: Adjust processing speed (1-20 concurrent requests)
+- **Request timeout**: Decide how long to wait for each domain before moving on. Lower values trim per-domain latency for very large jobs (tens of thousands of domains) but may skip slower sites.
+- **Retries per domain**: Control how many times to retry a failed domain. Extra retries improve resilience against transient errors yet add work for massive batches.
 - **JavaScript rendering**: Enable for dynamic sites (slower but more comprehensive)
+
+Large uploads magnify the trade-offs between these knobs: shorter timeouts paired with modest retry counts keep throughput high, while longer waits and more retries favor completeness at the cost of total runtime. Tune them according to whether speed or coverage is the priority for your dataset.
 
 ### Output Format
 
