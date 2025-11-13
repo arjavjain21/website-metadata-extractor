@@ -1378,8 +1378,16 @@ class StreamlitProgress:
 class ConsolidatedExtractor:
     """Consolidated extractor for Streamlit app."""
 
-    def __init__(self):
+    def __init__(self, concurrency: Optional[int] = None):
         self.config = self.get_default_config()
+
+        if concurrency is not None:
+            # Ensure the configured concurrency is always at least 1
+            safe_concurrency = max(1, int(concurrency))
+            self.config.setdefault('performance', {})['concurrency'] = safe_concurrency
+
+        self.concurrency = self.config.get('performance', {}).get('concurrency', 10)
+
         self.html_extractor = HTMLExtractor(self.config)
         self.meta_extractor = MetaExtractor(self.config)
         self.fallback_extractor = FallbackExtractor(self.config)
@@ -1499,14 +1507,22 @@ class ConsolidatedExtractor:
 
     async def process_domains(self, domains: list, progress_tracker=None):
         """Process a list of domains."""
+        performance_config = self.config.get('performance', {})
+        concurrency = max(1, int(performance_config.get('concurrency', self.concurrency or 1)))
+
         connector = aiohttp.TCPConnector(
-            limit=20,
-            limit_per_host=5,
+            limit=concurrency,
+            limit_per_host=concurrency,
             ttl_dns_cache=300,
             use_dns_cache=True
         )
 
-        timeout = aiohttp.ClientTimeout(total=30, connect=15)
+        timeout = aiohttp.ClientTimeout(
+            total=performance_config.get('timeout', 30),
+            sock_read=performance_config.get('read_timeout', None)
+        )
+
+        semaphore = asyncio.Semaphore(concurrency)
 
         async with aiohttp.ClientSession(
             connector=connector,
@@ -1514,10 +1530,11 @@ class ConsolidatedExtractor:
             headers={'User-Agent': 'DomainMetaExtractor/1.0'}
         ) as session:
 
-            tasks = []
-            for domain in domains:
-                task = self.extract_domain(domain, session, progress_tracker)
-                tasks.append(task)
+            async def bounded_extract(domain: str):
+                async with semaphore:
+                    return await self.extract_domain(domain, session, progress_tracker)
+
+            tasks = [bounded_extract(domain) for domain in domains]
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1646,7 +1663,7 @@ stackoverflow.com
 
                         # Process domains
                         with st.spinner("Processing domains..."):
-                            extractor = ConsolidatedExtractor()
+                            extractor = ConsolidatedExtractor(concurrency=concurrency)
 
                             # Run async processing
                             loop = asyncio.new_event_loop()
