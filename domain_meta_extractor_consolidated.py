@@ -1534,26 +1534,48 @@ class ConsolidatedExtractor:
                 async with semaphore:
                     return await self.extract_domain(domain, session, progress_tracker)
 
-            tasks = [bounded_extract(domain) for domain in domains]
+            pending_tasks: Dict[asyncio.Task, int] = {}
+            total_domains = len(domains)
+            results: List[Optional[dict]] = [None] * total_domains
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            next_index = 0
+            # Prime the task queue up to the configured concurrency.
+            while next_index < total_domains and len(pending_tasks) < concurrency:
+                task = asyncio.create_task(bounded_extract(domains[next_index]))
+                pending_tasks[task] = next_index
+                next_index += 1
 
-            processed_results = []
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    processed_results.append({
-                        'domain': domains[i],
-                        'meta_title': '',
-                        'meta_description': '',
-                        'extraction_method': 'exception',
-                        'status_code': 0,
-                        'extraction_time': 0,
-                        'error_message': str(result)
-                    })
-                else:
-                    processed_results.append(result)
+            while pending_tasks:
+                done, _ = await asyncio.wait(
+                    set(pending_tasks.keys()),
+                    return_when=asyncio.FIRST_COMPLETED
+                )
 
-            return processed_results
+                for finished in done:
+                    idx = pending_tasks.pop(finished)
+                    domain = domains[idx]
+                    try:
+                        result = finished.result()
+                    except Exception as exc:  # pragma: no cover - defensive
+                        result = {
+                            'domain': domain,
+                            'meta_title': '',
+                            'meta_description': '',
+                            'extraction_method': 'exception',
+                            'status_code': 0,
+                            'extraction_time': 0,
+                            'error_message': str(exc)
+                        }
+
+                    results[idx] = result
+
+                    if next_index < total_domains:
+                        task = asyncio.create_task(bounded_extract(domains[next_index]))
+                        pending_tasks[task] = next_index
+                        next_index += 1
+
+            # Filter out any None placeholders (shouldn't occur) and return the results
+            return [res for res in results if res is not None]
 
 
 def main():
