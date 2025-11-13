@@ -45,7 +45,7 @@ amazon.com
 
 ### Processing Options
 
-- **Maximum domains**: Limit the number of domains to process (10-1000)
+- **Maximum domains**: Limit the number of domains to process (10-100,000). Processing more than a few thousand domains will take considerably longer and may require a stable network connection.
 - **Concurrency level**: Adjust processing speed (1-20 concurrent requests)
 
 ### Output Format
@@ -84,6 +84,7 @@ The app uses a progressive 3-tier fallback approach:
 - **Speed**: 5-20 domains/second (depends on server responsiveness)
 - **Success Rate**: 80-95% (varies by site complexity)
 - **Concurrency**: Configurable up to 20 simultaneous requests
+- **Domain limit**: Configurable up to 100,000 domains per run, but extremely large batches (tens of thousands or more) can take a long time to finish.
 
 ## 📊 Example Results
 

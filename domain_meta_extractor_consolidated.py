@@ -1554,7 +1554,17 @@ def main():
 
     # Processing options
     st.sidebar.subheader("Processing Options")
-    max_domains = st.sidebar.slider("Maximum domains to process", 10, 10000, 100)
+    max_domains = st.sidebar.slider(
+        "Maximum domains to process",
+        10,
+        100000,
+        1000,
+        help=(
+            "Caps how many domains are processed in a single run. Higher values can "
+            "significantly increase processing time and network load, so consider "
+            "keeping this under 10,000 unless you are prepared for longer waits."
+        ),
+    )
     concurrency = st.sidebar.slider("Concurrency level", 1, 20, 10)
 
     # File upload section
@@ -1603,6 +1613,17 @@ stackoverflow.com
 
             # Extract domains
             domains = df['domain'].dropna().tolist()
+
+            # Sanity check to prevent overwhelming the app with massive uploads
+            hard_limit = 500_000
+            if len(domains) > hard_limit:
+                st.error(
+                    "❌ The uploaded file contains"
+                    f" {len(domains):,} domains, which exceeds the supported limit of"
+                    f" {hard_limit:,}. Please split the file into smaller batches"
+                    " before processing."
+                )
+                return
 
             # Limit domains if necessary
             if len(domains) > max_domains:
