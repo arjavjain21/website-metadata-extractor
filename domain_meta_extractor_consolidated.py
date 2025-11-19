@@ -1714,24 +1714,28 @@ stackoverflow.com
                 st.error("❌ CSV must contain a 'domain' column!")
                 return
 
-            # Extract domains
-            domains = df['domain'].dropna().tolist()
+            # Extract domains while tracking the original rows so we can
+            # preserve every column from the uploaded CSV in the final output
+            domain_series = df['domain'].dropna()
 
             # Sanity check to prevent overwhelming the app with massive uploads
             hard_limit = 500_000
-            if len(domains) > hard_limit:
+            if len(domain_series) > hard_limit:
                 st.error(
                     "❌ The uploaded file contains"
-                    f" {len(domains):,} domains, which exceeds the supported limit of"
+                    f" {len(domain_series):,} domains, which exceeds the supported limit of"
                     f" {hard_limit:,}. Please split the file into smaller batches"
                     " before processing."
                 )
                 return
 
             # Limit domains if necessary
-            if len(domains) > max_domains:
+            if len(domain_series) > max_domains:
                 st.warning(f"⚠️ Limiting to first {max_domains} domains for demo purposes.")
-                domains = domains[:max_domains]
+                domain_series = domain_series.iloc[:max_domains]
+
+            domains = domain_series.tolist()
+            original_rows = df.loc[domain_series.index].reset_index(drop=True)
 
             # Process button
             st.header("🚀 Start Processing")
@@ -1769,8 +1773,17 @@ stackoverflow.com
                         # Complete progress
                         progress_tracker.finish()
 
-                    # Create results DataFrame
+                    # Create results DataFrame and combine with original upload columns
                     results_df = pd.DataFrame(results)
+                    combined_df = original_rows.copy()
+                    if not results_df.empty:
+                        additional_columns = [
+                            col for col in results_df.columns if col not in combined_df.columns
+                        ]
+                        combined_df = pd.concat(
+                            [combined_df, results_df[additional_columns].reset_index(drop=True)],
+                            axis=1
+                        )
 
                     # Show results summary
                     st.header("📊 Results Summary")
@@ -1789,7 +1802,7 @@ stackoverflow.com
                     st.header("📋 Results")
 
                     # Add download button
-                    csv = results_df.to_csv(index=False)
+                    csv = combined_df.to_csv(index=False)
                     st.download_button(
                         label="📥 Download Results CSV",
                         data=csv,
@@ -1799,7 +1812,7 @@ stackoverflow.com
                     )
 
                     # Display results
-                    st.dataframe(results_df, use_container_width=True)
+                    st.dataframe(combined_df, use_container_width=True)
 
                     # Method breakdown
                     if results:
